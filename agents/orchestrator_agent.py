@@ -44,6 +44,21 @@ def format_source_bullet(source: dict) -> str:
     return f"- {customer_name}: {usecase_name}"
 
 
+def strip_markdown_markers(answer: str) -> str:
+    cleaned_lines = []
+
+    for line in answer.splitlines():
+        cleaned_line = re.sub(r"^\s{0,3}#{1,6}\s*", "", line)
+        cleaned_line = re.sub(r"^(\s*)[*+]\s+", r"\1- ", cleaned_line)
+        cleaned_line = re.sub(r"(\s)[*+]\s+", r"\1- ", cleaned_line)
+        cleaned_line = cleaned_line.replace("**", "")
+        cleaned_line = cleaned_line.replace("__", "")
+        cleaned_line = re.sub(r"(?<!\w)\*(?!\w)", "", cleaned_line)
+        cleaned_lines.append(cleaned_line.rstrip())
+
+    return "\n".join(cleaned_lines).strip()
+
+
 def build_structured_retrieval_answer(state: SalesHelperState) -> str:
     query = state.get("user_query", "").lower()
     unique_sources = dedupe_sources(state.get("qdrant_sources", []))
@@ -153,17 +168,21 @@ def build_short_retrieval_answer(state: SalesHelperState) -> tuple[str, str | No
 def build_model_answer(state: SalesHelperState, *, answer_style: str) -> tuple[str, str]:
     if answer_style == "detailed":
         style_instruction = (
-            "Write a detailed answer using clear sections and bullets. Include relevant customer names, "
-            "use cases, domains, tools, benefits, and source grounding when available."
+            "Write a detailed answer using clear plain-text sections and hyphen bullets. "
+            "Include relevant customer names, use cases, domains, tools, benefits, and source grounding when available. "
+            "Do not use Markdown headings, asterisks, bold markers, or hash symbols."
         )
     elif state.get("intent") == "draft_sales_content":
         style_instruction = (
             "Write concise sales-ready content that matches the user's requested format. "
-            "If they asked for an email, provide the email directly and keep it short."
+            "If they asked for an email, provide the email directly and keep it short. "
+            "Do not use Markdown headings, asterisks, bold markers, or hash symbols."
         )
     else:
         style_instruction = (
-            "Write a short answer in compact bullet points. If the answer is a count, state the count directly."
+            "Write a short plain-text answer in compact hyphen bullet points. "
+            "If the answer is a count, state the count directly. "
+            "Do not use Markdown headings, asterisks, bold markers, or hash symbols."
         )
 
     return invoke_llm(
@@ -294,7 +313,8 @@ def compose_final_response(state: SalesHelperState) -> SalesHelperState:
                 system_prompt=(
                     "You are the final response composer for Predikly Sales Helper. "
                     "Answer using the provided internal context and internal sources. "
-                    "Use short bullet points. If the answer is a count, state the count directly. "
+                    "Use short plain-text hyphen bullet points. If the answer is a count, state the count directly. "
+                    "Do not use Markdown headings, asterisks, bold markers, or hash symbols. "
                     "Do not reveal hidden chain-of-thought."
                 ),
                 user_prompt=(
@@ -310,6 +330,8 @@ def compose_final_response(state: SalesHelperState) -> SalesHelperState:
     if not answer:
         answer = "I could not find enough grounded internal context to answer reliably."
         answer_model = answer_model or "unavailable"
+
+    answer = strip_markdown_markers(answer)
 
     return {
         **state,

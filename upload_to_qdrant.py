@@ -545,43 +545,60 @@ def call_vision_llm(image_bytes: bytes) -> dict:
         "benefits": [],
     }
 
-    token = os.getenv("HF_HUB_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+    token_env_names = (
+        "HF_HUB_TOKEN",
+        "HUGGINGFACEHUB_API_TOKEN",
+        "HF_HUB_TOKEN1",
+        "HF_HUB_TOKEN2",
+        "HF_HUB_TOKEN3",
+    )
+    tokens = [
+        (env_name, token)
+        for env_name in token_env_names
+        if (token := os.getenv(env_name))
+    ]
 
-    if not token:
+    if not tokens:
         print("HF token missing. Vision LLM skipped.")
         return empty_result
 
     image_data = base64.b64encode(image_bytes).decode("utf-8")
-    client = InferenceClient(model=VISION_MODEL, token=token)
 
-    try:
-        response = client.chat_completion(
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": VISION_PROMPT},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{image_data}",
+    for token_index, (env_name, token) in enumerate(tokens, start=1):
+        client = InferenceClient(model=VISION_MODEL, token=token)
+
+        try:
+            response = client.chat_completion(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": VISION_PROMPT},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{image_data}",
+                                },
                             },
-                        },
-                    ],
-                }
-            ],
-            max_tokens=700,
-        )
+                        ],
+                    }
+                ],
+                max_tokens=700,
+            )
 
-        content = response.choices[0].message.content
-        parsed = safe_parse_json_from_llm(content)
+            content = response.choices[0].message.content
+            parsed = safe_parse_json_from_llm(content)
 
-        if not parsed:
-            print(f"Vision LLM returned non-JSON content: {content}")
-            return empty_result
+            if not parsed:
+                print(f"Vision LLM returned non-JSON content with {env_name}: {content}")
+                continue
 
-    except Exception as error:
-        print(f"Vision LLM failed: {error}")
+            if token_index > 1:
+                print(f"Vision LLM succeeded with fallback token {env_name}.")
+            break
+        except Exception as error:
+            print(f"Vision LLM failed with {env_name}: {error}")
+    else:
         return empty_result
 
     tools_used = parsed.get("tools_used", [])
@@ -904,6 +921,7 @@ def build_vector_metadata_payload(
         "vector_point_id": vector_point_id,
         "document_id": clean_metadata_value(drive_file.get("id", "")),
         "ppt_name": clean_metadata_value(drive_file.get("name", "")),
+        "original_ppt_name": clean_metadata_value(drive_file.get("original_name", drive_file.get("name", ""))),
         "slide_number": slide_info.get("slide_number"),
         "slide_title": clean_metadata_value(slide_info.get("slide_title", "")),
         "company_name": company_name,

@@ -55,14 +55,28 @@ FOLDER_MIME = "application/vnd.google-apps.folder"
 GOOGLE_SHEET_MIME = "application/vnd.google-apps.spreadsheet"
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+PDF_MIME = "application/pdf"
 REFERENCE_EXCEL_NAME = "PREDIKLY_USECASE_REFRENCE_POINTS.xlsx"
 REFERENCE_EXCEL_BASENAME = "PREDIKLY_USECASE_REFRENCE_POINTS"
 LOCAL_REFERENCE_EXCEL_PATH = BASE_DIR / REFERENCE_EXCEL_NAME
 
 
+def normalize_drive_document_name(value: str) -> str:
+    value = re.sub(r"\s+", " ", value).strip()
+
+    while True:
+        cleaned = re.sub(r"^copy\s+of\s+", "", value, flags=re.IGNORECASE).strip()
+
+        if cleaned == value:
+            return value
+
+        value = cleaned
+
+
 def normalize_match_key(value: str) -> str:
-    value = value.lower().strip()
+    value = normalize_drive_document_name(value).lower().strip()
     value = value.replace(".pptx", "")
+    value = value.replace(".pdf", "")
     value = value.replace(".xlsx", "")
     value = value.replace("’", "'")
     value = value.replace("–", "-")
@@ -454,15 +468,86 @@ def load_drive_file_metadata(service=None) -> list[dict]:
     root_item = get_drive_item(service, DRIVE_FOLDER_ID)
 
     if root_item["mimeType"] == FOLDER_MIME:
-        return list_drive_folder(
-            service,
-            root_item["id"],
-            recursive=True,
-            path=root_item["name"],
+        return normalize_and_validate_drive_files(
+            list_drive_folder(
+                service,
+                root_item["id"],
+                recursive=True,
+                path=root_item["name"],
+            )
         )
 
     root_item["drive_path"] = root_item["name"]
-    return [root_item]
+    return normalize_and_validate_drive_files([root_item])
+
+
+def normalize_and_validate_drive_files(files: list[dict]) -> list[dict]:
+    normalized_files = []
+
+    for file in files:
+        original_name = file.get("name", "")
+        normalized_name = normalize_drive_document_name(original_name)
+        normalized_file = {
+            **file,
+            "original_name": original_name,
+            "name": normalized_name,
+            "normalized_name": normalized_name,
+        }
+
+        if file.get("drive_path"):
+            normalized_file["original_drive_path"] = file["drive_path"]
+            normalized_file["drive_path"] = file["drive_path"].replace(original_name, normalized_name, 1)
+
+        normalized_files.append(normalized_file)
+
+    return dedupe_drive_documents(normalized_files)
+
+
+def dedupe_drive_documents(files: list[dict]) -> list[dict]:
+    documents_by_key = {}
+    passthrough_files = []
+
+    for file in files:
+        if file.get("mimeType") not in {PPTX_MIME, PDF_MIME}:
+            passthrough_files.append(file)
+            continue
+
+        key = (file.get("mimeType"), normalize_match_key(file.get("name", "")))
+        documents_by_key.setdefault(key, []).append(file)
+
+    deduped_files = [*passthrough_files]
+    skipped_files = []
+
+    for duplicate_files in documents_by_key.values():
+        selected_file = select_preferred_drive_document(duplicate_files)
+        deduped_files.append(selected_file)
+
+        for file in duplicate_files:
+            if file["id"] != selected_file["id"]:
+                skipped_files.append((selected_file, file))
+
+    for selected_file, skipped_file in skipped_files:
+        print(
+            "Skipped duplicate Drive document after name normalization: "
+            f"{skipped_file.get('original_name', skipped_file.get('name', ''))} "
+            f"({skipped_file.get('id', '')}) -> using "
+            f"{selected_file.get('original_name', selected_file.get('name', ''))} "
+            f"({selected_file.get('id', '')})"
+        )
+
+    return deduped_files
+
+
+def select_preferred_drive_document(files: list[dict]) -> dict:
+    return sorted(
+        files,
+        key=lambda file: (
+            file.get("original_name", "") != file.get("normalized_name", ""),
+            file.get("original_name", "").lower().count("copy of"),
+            file.get("original_name", "").lower(),
+            file.get("id", ""),
+        ),
+    )[0]
 
 
 def test_exact_excel_to_ppt_mapping() -> None:

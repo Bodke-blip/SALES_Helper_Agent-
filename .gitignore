@@ -35,6 +35,9 @@ data/*.cache
 
 # Generated/local data that may contain internal customer metadata
 data/customer_manifest.json
+data/langfuse_judge_eval_*.xlsx
+data/langfuse_judge_eval_*_audit.json
+data/langfuse_judge_eval_sources/
 
 # Local notebooks and exports
 .ipynb_checkpoints/
