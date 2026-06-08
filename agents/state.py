@@ -19,14 +19,18 @@ class SalesHelperState(TypedDict, total=False):
     workflow_started_at: float
     workflow_timings: list[dict[str, Any]]
     user_query: str
-    force_db_search: bool
+    contextual_query: str
+    chat_history: list[dict[str, str]]
     use_gemini_llm: bool
     use_local_llm: bool
-    answer_style: str
     input_guardrail_status: GuardrailStatus
     input_guardrail_reason: str
     intent: str
     selected_agents: list[str]
+    orchestrator_tool: str
+    orchestrator_tool_input: str
+    orchestrator_reason: str
+    orchestrator_decision: dict[str, Any]
     llm_provider_status: dict[str, Any]
     orchestrator_llm_model: str
     internal_context: list[dict[str, Any]]

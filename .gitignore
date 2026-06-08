@@ -19,7 +19,14 @@ ENV/
 .env.*
 !.env.example
 google_token.json
+client_secret.json
+client_secret*.json
 client_secret_*.json
+credentials.json
+credentials*.json
+service_account*.json
+*service-account*.json
+*.p12
 *.pem
 *.key
 *.crt

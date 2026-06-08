@@ -21,6 +21,9 @@ def guardrail_route(state: SalesHelperState) -> str:
 
 
 def route_after_orchestrator(state: SalesHelperState) -> str:
+    if state.get("orchestrator_tool") == "explain_capabilities":
+        return "compose_final_response"
+
     selected_agents = state.get("selected_agents", [])
 
     if not selected_agents:
@@ -72,6 +75,7 @@ def build_sales_helper_graph():
         route_after_orchestrator,
         {
             "knowledge_retrieval": "knowledge_retrieval",
+            "compose_final_response": "compose_final_response",
             "fallback_handler": "fallback_handler",
         },
     )

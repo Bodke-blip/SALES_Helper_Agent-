@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import requests
 import subprocess
 import tempfile
 from io import BytesIO
@@ -11,17 +12,24 @@ from uuid import uuid4
 from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 from huggingface_hub import InferenceClient
+from PIL import Image, UnidentifiedImageError
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from qdrant_client import QdrantClient
+from qdrant_client import models
 from qdrant_client.models import Distance, PayloadSchemaType, PointStruct, VectorParams
 
+from hybrid_retrieval import (
+    BM25SparseEncoder,
+    DENSE_VECTOR_NAME,
+    HYBRID_COLLECTION_NAME,
+    SPARSE_VECTOR_NAME,
+)
 from ingestion import (
     EMBEDDING_MODEL,
     EMBEDDING_VECTOR_SIZE,
     PPTX_MIME,
     QDRANT_API_KEY,
-    QDRANT_COLLECTION_NAME,
     QDRANT_URL,
     build_drive_service,
     download_drive_file,
@@ -29,15 +37,22 @@ from ingestion import (
     load_drive_file_metadata,
     load_reference_excel_rows,
     map_drive_ppts_to_excel_rows_exact,
+    normalize_drive_document_name,
     normalize_match_key,
 )
 
 
-DEFAULT_QDRANT_COLLECTION_NAME = "predikly_t7"
 MAX_USECASE_CONTENT_CHARS = 7000
 CUSTOMER_MANIFEST_PATH = Path("data/customer_manifest.json")
+QDRANT_UPSERT_BATCH_SIZE = max(1, int(os.getenv("QDRANT_UPSERT_BATCH_SIZE", "50")))
 
-VISION_MODEL = "google/gemma-4-31B-it"
+VISION_MODEL = os.getenv("VISION_MODEL", "qwen2.5vl")
+VISION_PROVIDER = os.getenv("VISION_PROVIDER", "ollama")
+VISION_MAX_TOKENS = int(os.getenv("VISION_MAX_TOKENS", "700"))
+VISION_TIMEOUT_SECONDS = int(os.getenv("VISION_TIMEOUT_SECONDS", "120"))
+VISION_MAX_IMAGE_SIDE = int(os.getenv("VISION_MAX_IMAGE_SIDE", "1024"))
+VISION_IMAGE_JPEG_QUALITY = int(os.getenv("VISION_IMAGE_JPEG_QUALITY", "82"))
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
 VISION_PROMPT = """You are analyzing a PowerPoint slide image from a Predikly customer case-study deck.
 
@@ -116,6 +131,10 @@ def normalize_customer_name(value: str) -> str:
     value = value.lower().strip()
     value = re.sub(r"[^a-z0-9\s]", " ", value)
     return re.sub(r"\s+", " ", value).strip()
+
+
+def clean_drive_file_name(value: str) -> str:
+    return clean_metadata_value(normalize_drive_document_name(str(value or "")))
 
 
 def clean_metadata_value(value):
@@ -537,6 +556,87 @@ def safe_parse_json_from_llm(content: str) -> dict:
         return {}
 
 
+def prepare_vision_image_bytes(image_bytes: bytes) -> bytes:
+    try:
+        with Image.open(BytesIO(image_bytes)) as image:
+            image.thumbnail(
+                (VISION_MAX_IMAGE_SIDE, VISION_MAX_IMAGE_SIDE),
+                Image.Resampling.LANCZOS,
+            )
+
+            if image.mode in {"RGBA", "LA"}:
+                background = Image.new("RGB", image.size, (255, 255, 255))
+                alpha_channel = image.getchannel("A")
+                background.paste(image.convert("RGBA"), mask=alpha_channel)
+                image = background
+            else:
+                image = image.convert("RGB")
+
+            output = BytesIO()
+            image.save(
+                output,
+                format="JPEG",
+                quality=VISION_IMAGE_JPEG_QUALITY,
+                optimize=True,
+            )
+            return output.getvalue()
+    except (UnidentifiedImageError, OSError) as error:
+        print(f"Vision image downscale skipped: {error}")
+        return image_bytes
+
+
+def normalize_vision_fields(parsed: dict) -> dict:
+    tools_used = parsed.get("tools_used", [])
+    benefits = parsed.get("benefits", [])
+
+    return {
+        "workflow_image_summary": clean_metadata_value(
+            parsed.get("workflow_image_summary", "")
+        ),
+        "solution_proposed": clean_metadata_value(
+            parsed.get("solution_proposed", "")
+        ),
+        "tools_used": tools_used if isinstance(tools_used, list) else [],
+        "benefits": benefits if isinstance(benefits, list) else [],
+    }
+
+
+def call_ollama_vision_llm(image_data: str) -> dict:
+    try:
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/chat",
+            json={
+                "model": VISION_MODEL,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": VISION_PROMPT,
+                        "images": [image_data],
+                    }
+                ],
+                "stream": False,
+                "options": {
+                    "temperature": 0,
+                    "num_predict": VISION_MAX_TOKENS,
+                },
+            },
+            timeout=VISION_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+    except requests.RequestException as error:
+        print(f"Ollama vision LLM failed with {VISION_MODEL}: {error}")
+        return {}
+
+    content = response.json().get("message", {}).get("content", "")
+    parsed = safe_parse_json_from_llm(content)
+
+    if not parsed:
+        print(f"Ollama vision LLM returned non-JSON content: {content}")
+        return {}
+
+    return parsed
+
+
 def call_vision_llm(image_bytes: bytes) -> dict:
     empty_result = {
         "workflow_image_summary": "",
@@ -544,6 +644,23 @@ def call_vision_llm(image_bytes: bytes) -> dict:
         "tools_used": [],
         "benefits": [],
     }
+
+    prepared_image_bytes = prepare_vision_image_bytes(image_bytes)
+    if len(prepared_image_bytes) < len(image_bytes):
+        print(
+            "Vision image resized: "
+            f"{len(image_bytes)} bytes -> {len(prepared_image_bytes)} bytes"
+        )
+
+    image_data = base64.b64encode(prepared_image_bytes).decode("utf-8")
+
+    if VISION_PROVIDER == "ollama":
+        parsed = call_ollama_vision_llm(image_data)
+        return normalize_vision_fields(parsed) if parsed else empty_result
+
+    if VISION_PROVIDER != "hf_inference":
+        print(f"Unsupported VISION_PROVIDER={VISION_PROVIDER}. Vision LLM skipped.")
+        return empty_result
 
     token_env_names = (
         "HF_HUB_TOKEN",
@@ -561,8 +678,6 @@ def call_vision_llm(image_bytes: bytes) -> dict:
     if not tokens:
         print("HF token missing. Vision LLM skipped.")
         return empty_result
-
-    image_data = base64.b64encode(image_bytes).decode("utf-8")
 
     for token_index, (env_name, token) in enumerate(tokens, start=1):
         client = InferenceClient(model=VISION_MODEL, token=token)
@@ -583,7 +698,7 @@ def call_vision_llm(image_bytes: bytes) -> dict:
                         ],
                     }
                 ],
-                max_tokens=700,
+                max_tokens=VISION_MAX_TOKENS,
             )
 
             content = response.choices[0].message.content
@@ -601,19 +716,7 @@ def call_vision_llm(image_bytes: bytes) -> dict:
     else:
         return empty_result
 
-    tools_used = parsed.get("tools_used", [])
-    benefits = parsed.get("benefits", [])
-
-    return {
-        "workflow_image_summary": clean_metadata_value(
-            parsed.get("workflow_image_summary", "")
-        ),
-        "solution_proposed": clean_metadata_value(
-            parsed.get("solution_proposed", "")
-        ),
-        "tools_used": tools_used if isinstance(tools_used, list) else [],
-        "benefits": benefits if isinstance(benefits, list) else [],
-    }
+    return normalize_vision_fields(parsed)
 
 
 def tokenize_for_match(value: str) -> set[str]:
@@ -868,9 +971,13 @@ def build_vector_metadata_payload(
     ppt_fields: dict,
     vision_fields: dict,
 ) -> dict:
+    ppt_name = clean_drive_file_name(drive_file.get("name", ""))
+    original_ppt_name = clean_drive_file_name(
+        drive_file.get("original_name", drive_file.get("name", ""))
+    )
     company_name = (
         excel_value(excel_row, "Customer Name", "Company Name")
-        or clean_metadata_value(drive_file.get("name", ""))
+        or ppt_name
     )
 
     customer_domain = excel_value(excel_row, "Customer Domain")
@@ -920,8 +1027,8 @@ def build_vector_metadata_payload(
     metadata = {
         "vector_point_id": vector_point_id,
         "document_id": clean_metadata_value(drive_file.get("id", "")),
-        "ppt_name": clean_metadata_value(drive_file.get("name", "")),
-        "original_ppt_name": clean_metadata_value(drive_file.get("original_name", drive_file.get("name", ""))),
+        "ppt_name": ppt_name,
+        "original_ppt_name": original_ppt_name,
         "slide_number": slide_info.get("slide_number"),
         "slide_title": clean_metadata_value(slide_info.get("slide_title", "")),
         "company_name": company_name,
@@ -999,7 +1106,7 @@ def build_documents_for_qdrant() -> list[Document]:
         unmatched_ppts = [
             {
                 "drive_file": drive_file,
-                "match_key": normalize_match_key(drive_file.get("name", "")),
+                "match_key": normalize_match_key(clean_drive_file_name(drive_file.get("name", ""))),
             }
             for drive_file in drive_files
             if drive_file.get("mimeType") == PPTX_MIME
@@ -1031,9 +1138,15 @@ def build_documents_for_qdrant() -> list[Document]:
         if drive_file.get("mimeType") != PPTX_MIME:
             continue
 
-        print(f"\nProcessing PPT: {drive_file.get('name', '')}")
+        ppt_name = clean_drive_file_name(drive_file.get("name", ""))
+        print(f"\nProcessing PPT: {ppt_name}")
 
-        ppt_content = download_drive_file(service, drive_file["id"])
+        try:
+            ppt_content = download_drive_file(service, drive_file["id"])
+        except Exception as error:
+            print(f"Skipping PPT after download failure: {ppt_name}. Reason: {error}")
+            continue
+
         slide_infos = extract_pptx_slide_infos(ppt_content)
 
         slide_texts = [
@@ -1069,7 +1182,7 @@ def build_documents_for_qdrant() -> list[Document]:
                 if slide_info["has_diagram"]:
                     print(
                         f"Diagram/image detected: "
-                        f"{drive_file.get('name')} | slide {slide_info['slide_number']}"
+                        f"{ppt_name} | slide {slide_info['slide_number']}"
                     )
 
                     image_bytes = render_or_extract_slide_image(
@@ -1205,22 +1318,30 @@ def chunk_documents(documents: list[Document]) -> list[Document]:
 
 
 def ensure_qdrant_collection(client: QdrantClient) -> None:
-    collection_name = QDRANT_COLLECTION_NAME or DEFAULT_QDRANT_COLLECTION_NAME
+    collection_name = HYBRID_COLLECTION_NAME
 
     if client.collection_exists(collection_name):
         return
 
     client.create_collection(
         collection_name=collection_name,
-        vectors_config=VectorParams(
-            size=EMBEDDING_VECTOR_SIZE,
-            distance=Distance.COSINE,
-        ),
+        vectors_config={
+            DENSE_VECTOR_NAME: VectorParams(
+                size=EMBEDDING_VECTOR_SIZE,
+                distance=Distance.COSINE,
+            ),
+        },
+        sparse_vectors_config={
+            SPARSE_VECTOR_NAME: models.SparseVectorParams(),
+        },
     )
 
 
 def ensure_payload_indexes(client: QdrantClient, collection_name: str) -> None:
     indexes = {
+        "document_id": PayloadSchemaType.KEYWORD,
+        "drive_id": PayloadSchemaType.KEYWORD,
+        "ppt_name": PayloadSchemaType.KEYWORD,
         "customer_name_normalized": PayloadSchemaType.KEYWORD,
         "company_name": PayloadSchemaType.TEXT,
         "use_case_name": PayloadSchemaType.TEXT,
@@ -1250,7 +1371,7 @@ def upload_documents_to_qdrant(documents: list[Document]) -> None:
     if not documents:
         raise ValueError("No documents were created from the mapped PPTs.")
 
-    collection_name = QDRANT_COLLECTION_NAME or DEFAULT_QDRANT_COLLECTION_NAME
+    collection_name = HYBRID_COLLECTION_NAME
 
     client = QdrantClient(
         url=QDRANT_URL,
@@ -1261,14 +1382,16 @@ def upload_documents_to_qdrant(documents: list[Document]) -> None:
     ensure_payload_indexes(client, collection_name)
 
     embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+    sparse_encoder = BM25SparseEncoder.fit([document.page_content for document in documents])
+    sparse_encoder.save()
 
-    vectors = embeddings.embed_documents(
+    dense_vectors = embeddings.embed_documents(
         [document.page_content for document in documents]
     )
 
     points = []
 
-    for document, vector in zip(documents, vectors):
+    for document, dense_vector in zip(documents, dense_vectors):
         payload = {
             **document.metadata,
             "page_content": document.page_content,
@@ -1277,15 +1400,24 @@ def upload_documents_to_qdrant(documents: list[Document]) -> None:
         points.append(
             PointStruct(
                 id=str(document.metadata.get("vector_point_id") or uuid4()),
-                vector=vector,
+                vector={
+                    DENSE_VECTOR_NAME: dense_vector,
+                    SPARSE_VECTOR_NAME: sparse_encoder.encode_document(document.page_content),
+                },
                 payload=payload,
             )
         )
 
-    client.upsert(
-        collection_name=collection_name,
-        points=points,
-    )
+    for batch_start in range(0, len(points), QDRANT_UPSERT_BATCH_SIZE):
+        batch = points[batch_start:batch_start + QDRANT_UPSERT_BATCH_SIZE]
+        client.upsert(
+            collection_name=collection_name,
+            points=batch,
+        )
+        print(
+            f"Uploaded batch {batch_start // QDRANT_UPSERT_BATCH_SIZE + 1} "
+            f"({len(batch)} point(s)) to Qdrant collection: {collection_name}"
+        )
 
     print(
         f"Uploaded {len(documents)} vector point(s) "

@@ -34,8 +34,9 @@ The ingestion flow is:
 ```text
 Google Drive + reference Excel/PPT files
   -> metadata extraction
-  -> embeddings with sentence-transformers/all-MiniLM-L6-v2
-  -> Qdrant collection
+  -> dense embeddings with sentence-transformers/all-MiniLM-L6-v2
+  -> BM25 sparse vectors
+  -> Qdrant hybrid collection
   -> customer manifest
 ```
 
@@ -101,30 +102,49 @@ Add the required configuration:
 ```env
 QDRANT_URL=your_qdrant_url
 QDRANT_API_KEY=your_qdrant_api_key
-QDRANT_COLLECTION_NAME=predikly_t7
+HYBRID_QDRANT_COLLECTION_NAME=predikly_hybrid_search_data_v2
+HYBRID_QDRANT_FALLBACK_COLLECTION_NAME=predikly_hybrid_serch_data
 
 GEMINI_API_KEY=your_gemini_api_key
 
 OLLAMA_BASE_URL=http://127.0.0.1:11434
-REQUEST_FALLBACK_AFTER_SECONDS=10
-PRIMARY_LLM_TIMEOUT_SECONDS=20
-OLLAMA_TIMEOUT_SECONDS=120
+REQUEST_FALLBACK_AFTER_SECONDS=999
+PRIMARY_LLM_TIMEOUT_SECONDS=12
+OLLAMA_TIMEOUT_SECONDS=10
+
+VISION_MODEL=qwen2.5vl
+VISION_PROVIDER=ollama
+VISION_MAX_TOKENS=700
+VISION_TIMEOUT_SECONDS=120
+VISION_MAX_IMAGE_SIDE=1024
+VISION_IMAGE_JPEG_QUALITY=82
 
 ENABLE_LANGFUSE_TRACING=false
 LANGFUSE_PUBLIC_KEY=
 LANGFUSE_SECRET_KEY=
 LANGFUSE_HOST=
+
+GOOGLE_CLIENT_SECRET_FILE=client_secret.json
 ```
 
 Optional retrieval settings:
 
 ```env
-ENABLE_QDRANT_FALLBACK_COLLECTIONS=false
-QDRANT_FALLBACK_COLLECTIONS=
-QDRANT_CUSTOMER_TOP_K=40
+QDRANT_TOP_K=15
+QDRANT_HYBRID_PREFETCH_LIMIT=50
+QDRANT_DOCUMENT_EXPANSION_SOURCE_LIMIT=3
+QDRANT_DOCUMENT_EXPANSION_CHUNK_LIMIT=40
+QDRANT_MAX_CONTEXT_ITEMS=30
+QDRANT_TIMEOUT_SECONDS=8
+ENSURE_PAYLOAD_INDEXES_ON_QUERY=false
+MIN_RETRIEVAL_RESULTS=1
+QDRANT_UPSERT_BATCH_SIZE=50
+BM25_STATE_PATH=data/bm25_sparse_encoder.json
 RETRIEVAL_CACHE_TTL_SECONDS=300
 RETRIEVAL_CACHE_MAX_ENTRIES=256
-CUSTOMER_MANIFEST_PATH=data/customer_manifest.json
+MAX_CHAT_HISTORY_TURNS=6
+CHAT_HISTORY_LIMIT=40
+CHAT_DB_URL=postgresql://USER:PASSWORD@HOST:5432/predikly_sales_helper?sslmode=require
 ```
 
 ## Secrets and Local Files
@@ -138,7 +158,7 @@ Do not commit local secrets or OAuth files. The `.gitignore` excludes:
 - `__pycache__/`
 - `data/customer_manifest.json`
 
-For Google Drive ingestion, keep the OAuth client secret JSON locally in the project root. The first ingestion run may create `google_token.json`.
+For Google Drive ingestion, keep the OAuth client secret JSON locally in the project root and set `GOOGLE_CLIENT_SECRET_FILE` to its filename. The first ingestion run may create `google_token.json`.
 
 ## Run the App
 
@@ -169,21 +189,17 @@ curl -X POST http://127.0.0.1:8000/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "How many cases of Bill Gosling has Predikly worked on before?",
-    "force_db_search": false,
     "use_gemini_llm": true,
     "use_local_llm": true,
-    "verbose": true,
-    "answer_style": "short"
+    "verbose": true
   }'
 ```
 
 Useful options:
 
-- `force_db_search`: forces retrieval path.
 - `use_gemini_llm`: enables Gemini.
 - `use_local_llm`: enables local Ollama fallback.
 - `verbose`: includes agent trace details.
-- `answer_style`: `short` or `detailed`.
 
 ## Cache Endpoints
 
@@ -201,7 +217,7 @@ curl -X DELETE http://127.0.0.1:8000/cache
 
 ## Ingestion and Qdrant Upload
 
-The project includes scripts for loading approved Google Drive/reference data and uploading processed documents into Qdrant.
+The project includes scripts for loading approved Google Drive/reference data and uploading processed documents into a hybrid Qdrant collection.
 
 Validate Google Drive to Excel/PPT mapping:
 
@@ -215,10 +231,21 @@ Upload processed documents to Qdrant:
 python3 upload_to_qdrant.py
 ```
 
+By default, this creates/updates `predikly_hybrid_search_data_v2` with named vectors `dense` and `sparse`, and writes the BM25 sparse encoder state to `data/bm25_sparse_encoder.json`.
+Qdrant upserts are batched with `QDRANT_UPSERT_BATCH_SIZE` to avoid large request limits.
+
+The previous main collection, `predikly_hybrid_serch_data`, is configured as the fallback collection while the new Qwen-vision upload is validated.
+
+To rebuild a specific collection with the same upload script, set `HYBRID_QDRANT_COLLECTION_NAME` for that upload run:
+
+```bash
+HYBRID_QDRANT_COLLECTION_NAME=predikly_hybrid_search_data_v2 python3 upload_to_qdrant.py
+```
+
 Before uploading, confirm:
 
 - `QDRANT_URL` and `QDRANT_API_KEY` are set.
-- The target collection name is correct.
+- The hybrid target collection name is correct.
 - Google Drive OAuth credentials are available locally.
 - The reference workbook/PPT assets are accessible.
 
@@ -246,5 +273,7 @@ http://127.0.0.1:11434
 
 - The default primary model is `gemini-2.5-flash`.
 - The default embedding model is `sentence-transformers/all-MiniLM-L6-v2`.
-- The default Qdrant collection is `predikly_t7`.
+- The default hybrid Qdrant collection is `predikly_hybrid_search_data_v2`.
+- The default fallback hybrid Qdrant collection is `predikly_hybrid_serch_data`.
+- Retrieval checks the main hybrid collection first and only tries the fallback collection when the main collection returns fewer than `MIN_RETRIEVAL_RESULTS`.
 - This project is currently shaped for internal development/pilot use. Add authentication, production secret management, monitoring, CI checks, and a formal security review before production deployment.

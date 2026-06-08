@@ -15,9 +15,9 @@ load_dotenv()
 PRIMARY_LLM_MODEL = "gemini-2.5-flash"
 FALLBACK_LLM_MODEL = "llama3.2:3b"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-OLLAMA_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120"))
-REQUEST_FALLBACK_AFTER_SECONDS = float(os.getenv("REQUEST_FALLBACK_AFTER_SECONDS", "10"))
-PRIMARY_LLM_TIMEOUT_SECONDS = float(os.getenv("PRIMARY_LLM_TIMEOUT_SECONDS", "20"))
+OLLAMA_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "10"))
+REQUEST_FALLBACK_AFTER_SECONDS = float(os.getenv("REQUEST_FALLBACK_AFTER_SECONDS", "999"))
+PRIMARY_LLM_TIMEOUT_SECONDS = float(os.getenv("PRIMARY_LLM_TIMEOUT_SECONDS", "12"))
 _request_started_at: ContextVar[float | None] = ContextVar(
     "request_started_at",
     default=None,

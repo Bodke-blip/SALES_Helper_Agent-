@@ -1,9 +1,10 @@
 import csv
 import os
 import re
+import time
 from io import BytesIO, StringIO
 from pathlib import Path
-from typing import Iterable, TypedDict
+from typing import Callable, Iterable, TypedDict
 
 from dotenv import load_dotenv
 
@@ -37,10 +38,7 @@ load_dotenv(BASE_DIR / ".env")
 DRIVE_FOLDER_ID = "1bljckgh6CFCPpB7dHfoeMBdNx3Il7gWX"
 
 TOKEN_PATH = BASE_DIR / "google_token.json"
-CREDENTIALS_PATH = (
-    BASE_DIR
-    / "client_secret_747615723880-g0e74bm27ifn75h231po8tb3a6mqaodt.apps.googleusercontent.com.json"
-)
+CREDENTIALS_PATH = BASE_DIR / os.getenv("GOOGLE_CLIENT_SECRET_FILE", "client_secret.json")
 
 GOOGLE_DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
@@ -49,7 +47,7 @@ EMBEDDING_VECTOR_SIZE = 384
 
 QDRANT_URL = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
-QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "predikly_t7")
+QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "predikly_tk11")
 
 FOLDER_MIME = "application/vnd.google-apps.folder"
 GOOGLE_SHEET_MIME = "application/vnd.google-apps.spreadsheet"
@@ -227,28 +225,54 @@ def map_drive_ppts_to_excel_rows_exact(
     return mapped_items, unmatched_ppts, extra_excel_rows
 
 
+def download_media_with_retries(
+    request_factory: Callable,
+    *,
+    label: str,
+    max_attempts: int = 5,
+) -> bytes:
+    last_error = None
+
+    for attempt in range(1, max_attempts + 1):
+        buffer = BytesIO()
+        downloader = MediaIoBaseDownload(buffer, request_factory())
+        done = False
+
+        try:
+            while not done:
+                _, done = downloader.next_chunk()
+
+            return buffer.getvalue()
+        except Exception as error:
+            last_error = error
+
+            if attempt >= max_attempts:
+                break
+
+            wait_seconds = min(2 ** attempt, 30)
+            print(
+                f"{label} failed on attempt {attempt}/{max_attempts}: {error}. "
+                f"Retrying in {wait_seconds}s."
+            )
+            time.sleep(wait_seconds)
+
+    raise RuntimeError(
+        f"{label} failed after {max_attempts} attempts: {last_error}"
+    ) from last_error
+
+
 def download_drive_file(service, file_id: str) -> bytes:
-    request = service.files().get_media(fileId=file_id)
-    buffer = BytesIO()
-    downloader = MediaIoBaseDownload(buffer, request)
-    done = False
-
-    while not done:
-        _, done = downloader.next_chunk()
-
-    return buffer.getvalue()
+    return download_media_with_retries(
+        lambda: service.files().get_media(fileId=file_id),
+        label=f"Google Drive download for file {file_id}",
+    )
 
 
 def export_drive_file(service, file_id: str, mime_type: str) -> bytes:
-    request = service.files().export_media(fileId=file_id, mimeType=mime_type)
-    buffer = BytesIO()
-    downloader = MediaIoBaseDownload(buffer, request)
-    done = False
-
-    while not done:
-        _, done = downloader.next_chunk()
-
-    return buffer.getvalue()
+    return download_media_with_retries(
+        lambda: service.files().export_media(fileId=file_id, mimeType=mime_type),
+        label=f"Google Drive export for file {file_id}",
+    )
 
 
 def extract_xlsx_rows(content: bytes) -> list[dict]:

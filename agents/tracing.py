@@ -154,6 +154,21 @@ def flush_langfuse() -> None:
         langfuse_client.flush()
 
 
+def build_final_response_trace_output(state: SalesHelperState) -> dict[str, Any]:
+    final_response = state.get("final_response", {}) or {}
+
+    return {
+        "answer": final_response.get("answer", ""),
+        "sources": final_response.get("sources", []),
+        "evaluation": final_response.get("evaluation", []),
+        "llm_models": final_response.get("llm_models", {}),
+        "fallback_status": final_response.get("fallback_status", state.get("fallback_status", "not_used")),
+        "trace_id": final_response.get("trace_id", state.get("trace_id")),
+        "retrieval_collection": state.get("retrieval_collection", ""),
+        "retrieval_cache_status": state.get("retrieval_cache_status", "not_used"),
+    }
+
+
 def traced_node(node_name: str, node_fn: Callable[[SalesHelperState], SalesHelperState]):
     @wraps(node_fn)
     def wrapper(state: SalesHelperState) -> SalesHelperState:
@@ -205,6 +220,9 @@ def traced_node(node_name: str, node_fn: Callable[[SalesHelperState], SalesHelpe
             "duration_ms": elapsed_ms,
         }
 
+        if node_name == "output_guardrail":
+            output_summary["final_response"] = build_final_response_trace_output(output_state)
+
         trace_event(
             output_state,
             name=node_name,
@@ -214,6 +232,19 @@ def traced_node(node_name: str, node_fn: Callable[[SalesHelperState], SalesHelpe
         )
 
         if node_name == "output_guardrail":
+            trace_event(
+                output_state,
+                name="final_response",
+                input_data={
+                    "user_query": output_state.get("user_query", ""),
+                    "intent": output_state.get("intent", ""),
+                },
+                output_data=build_final_response_trace_output(output_state),
+                metadata={
+                    "node_type": "final_output",
+                    "observation_type": "span",
+                },
+            )
             flush_langfuse()
 
         return output_state

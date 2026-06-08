@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Predikly Sales Helper</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">P</div>
+        <div>
+          <strong>Predikly</strong>
+          <span>Sales Helper</span>
+        </div>
+      </div>
+      <button id="newChat" class="new-chat" type="button">New Chat</button>
+      <nav id="chatList" class="chat-list" aria-label="Past conversations"></nav>
+      <div class="sidebar-meta">
+        <span id="status">Ready</span>
+        <span id="elapsed">0.0s</span>
+      </div>
+    </aside>
+
+    <main class="chat-main">
+      <section class="thread" aria-live="polite">
+        <div id="emptyState" class="empty-state">
+          <h1>How can I help with Predikly case studies?</h1>
+        </div>
+        <div id="chatHistory" class="chat-history"></div>
+      </section>
+
+      <section class="composer-wrap">
+        <form id="composer" class="composer">
+          <textarea id="query" rows="1" placeholder="Ask a follow-up or start a new question..."></textarea>
+          <div class="composer-footer">
+            <div class="controls">
+              <label class="check">
+                <input id="verbose" type="checkbox" checked />
+                Verbose
+              </label>
+              <select id="llmMode" aria-label="LLM model">
+                <option value="gemini_ollama" selected>Gemini + Ollama</option>
+                <option value="gemini_only">Gemini only</option>
+                <option value="ollama_only">Ollama only</option>
+              </select>
+            </div>
+            <button id="run" class="send" type="submit">Send</button>
+          </div>
+        </form>
+
+        <details class="debug-details">
+          <summary>Run details</summary>
+          <div class="debug-grid">
+            <div>
+              <h2>Trace ID</h2>
+              <pre id="trace">-</pre>
+            </div>
+            <div>
+              <h2>Status</h2>
+              <pre id="fallback">not_started</pre>
+            </div>
+            <div>
+              <h2>Runtime</h2>
+              <pre id="runtimeLog">No query run yet.</pre>
+            </div>
+            <div>
+              <h2>Agent Trace</h2>
+              <pre id="agentTrace">[]</pre>
+            </div>
+            <div>
+              <h2>Sources</h2>
+              <pre id="sources">[]</pre>
+            </div>
+            <div>
+              <h2>Evaluation</h2>
+              <pre id="evaluation">[]</pre>
+            </div>
+            <div>
+              <h2>LLM Models</h2>
+              <pre id="models">{}</pre>
+            </div>
+          </div>
+        </details>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

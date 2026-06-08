@@ -34,14 +34,11 @@ def append_evaluation(
 
 def evaluate_knowledge_retrieval(state: SalesHelperState) -> SalesHelperState:
     sources = state.get("qdrant_sources", [])
-    draft_intent = state.get("intent") == "draft_sales_content"
-    confidence = 0.9 if sources else (0.35 if draft_intent else 0.0)
-    status = "passed" if sources or draft_intent else "failed"
+    confidence = 0.9 if sources else 0.0
+    status = "passed" if sources else "failed"
 
     if sources:
         notes = ["Qdrant sources returned."]
-    elif draft_intent:
-        notes = ["No Qdrant sources returned; drafting can continue as a general ungrounded sales draft."]
     else:
         notes = ["No Qdrant sources returned."]
 
