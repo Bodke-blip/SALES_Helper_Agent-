@@ -11,6 +11,7 @@ qdrant-client
 # Runtime configuration and utilities
 python-dotenv
 pydantic
+langfuse
 fastapi
 uvicorn
 psycopg[binary]

@@ -29,4 +29,10 @@ services:
       - key: BM25_STATE_PATH
         value: data/bm25_sparse_encoder.json
       - key: ENABLE_LANGFUSE_TRACING
-        value: "false"
+        value: "true"
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_HOST
+        value: https://cloud.langfuse.com

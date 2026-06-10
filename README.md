@@ -49,7 +49,7 @@ Google Drive + reference Excel/PPT files
 - Qdrant
 - Google Gemini
 - Hosted Hugging Face MiniLM embeddings
-- Optional Langfuse tracing if `langfuse` is installed
+- Optional Langfuse tracing
 
 ## Project Structure
 
@@ -183,6 +183,8 @@ QDRANT_URL=your_qdrant_url
 QDRANT_API_KEY=your_qdrant_api_key
 GEMINI_API_KEY=your_gemini_api_key
 HF_HUB_TOKEN=your_huggingface_token
+LANGFUSE_PUBLIC_KEY=your_langfuse_public_key
+LANGFUSE_SECRET_KEY=your_langfuse_secret_key
 ```
 
 The blueprint sets the non-secret defaults, including:
@@ -191,7 +193,8 @@ The blueprint sets the non-secret defaults, including:
 PRIMARY_LLM_TIMEOUT_SECONDS=45
 HF_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 BM25_STATE_PATH=data/bm25_sparse_encoder.json
-ENABLE_LANGFUSE_TRACING=false
+ENABLE_LANGFUSE_TRACING=true
+LANGFUSE_HOST=https://cloud.langfuse.com
 ```
 
 After deploy, test:
