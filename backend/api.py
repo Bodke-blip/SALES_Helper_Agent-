@@ -57,6 +57,26 @@ def build_workflow_timings(result: dict[str, Any], request_started_at: float) ->
     ]
 
 
+def build_chat_turn_metadata(result: dict[str, Any], retrieval_collection: str) -> dict[str, Any]:
+    sources = result.get("qdrant_sources", [])
+    source_hints = []
+
+    for source in sources[:3]:
+        source_hints.append(
+            {
+                "customer_name": source.get("customer_name", ""),
+                "usecase_name": source.get("usecase_name", ""),
+                "ppt_name": source.get("ppt_name", ""),
+                "slide_number": source.get("slide_number"),
+            }
+        )
+
+    return {
+        "retrieval_collection": retrieval_collection,
+        "source_hints": source_hints,
+    }
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Predikly Sales Helper")
     frontend_origins = [
@@ -133,7 +153,7 @@ def create_app() -> FastAPI:
                 session_id,
                 request.query,
                 response_text,
-                {"retrieval_collection": retrieval_collection},
+                build_chat_turn_metadata(result, retrieval_collection),
             )
             return {
                 **final_response,

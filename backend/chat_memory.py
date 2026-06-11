@@ -304,19 +304,53 @@ def last_user_query(chat_history: list[dict[str, str]]) -> str:
     return ""
 
 
+def last_assistant_source_hint(chat_history: list[dict[str, Any]]) -> str:
+    for item in reversed(chat_history):
+        if item.get("role") != "assistant":
+            continue
+
+        metadata = item.get("metadata") or {}
+        source_hints = metadata.get("source_hints") or []
+        hint_parts = []
+
+        for source in source_hints[:3]:
+            if not isinstance(source, dict):
+                continue
+
+            values = [
+                source.get("customer_name", ""),
+                source.get("usecase_name", ""),
+                source.get("ppt_name", ""),
+            ]
+            label = " | ".join(str(value).strip() for value in values if str(value).strip())
+
+            if label and label not in hint_parts:
+                hint_parts.append(label)
+
+        if hint_parts:
+            return "; ".join(hint_parts)
+
+    return ""
+
+
 def build_contextual_query(query: str, chat_history: list[dict[str, str]]) -> str:
     max_messages = max(0, MAX_CHAT_HISTORY_TURNS * 2)
 
     if not chat_history or max_messages == 0 or not is_follow_up_query(query):
         return query
 
-    previous_query = last_user_query(chat_history[-max_messages:])
+    recent_history = chat_history[-max_messages:]
+    previous_query = last_user_query(recent_history)
+    source_hint = last_assistant_source_hint(recent_history)
 
     if not previous_query:
         return query
 
+    source_context = f"\nPrevious retrieved source/project hints: {source_hint}" if source_hint else ""
+
     return (
-        "Resolve this follow-up using only the immediately previous user question.\n"
+        "Resolve this follow-up using the immediately previous user question and retrieved source hints.\n"
         f"Previous user question: {previous_query}\n"
+        f"{source_context}\n"
         f"Current follow-up question: {query}"
     )

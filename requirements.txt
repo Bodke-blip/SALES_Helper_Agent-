@@ -1,4 +1,5 @@
 # Runtime LangChain / LangGraph stack
+langchain
 langchain-core
 langchain-google-genai
 langgraph

@@ -18,6 +18,8 @@ services:
         sync: false
       - key: GEMINI_MODEL
         value: gemini-2.5-flash
+      - key: GEMINI_FALLBACK_MODEL
+        value: gemini-2.5-flash-lite
       - key: PRIMARY_LLM_TIMEOUT_SECONDS
         value: "45"
       - key: HF_HUB_TOKEN

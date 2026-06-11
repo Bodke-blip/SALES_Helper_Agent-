@@ -31,6 +31,7 @@ class SalesHelperState(TypedDict, total=False):
     orchestrator_tool_input: str
     orchestrator_reason: str
     orchestrator_decision: dict[str, Any]
+    orchestrator_error: str
     llm_provider_status: dict[str, Any]
     orchestrator_llm_model: str
     internal_context: list[dict[str, Any]]
@@ -45,4 +46,5 @@ class SalesHelperState(TypedDict, total=False):
     evaluations: list[AgentEvaluation]
     fallback_status: str
     fallback_reason: str
+    answer_composer_error: str
     final_response: dict[str, Any]
